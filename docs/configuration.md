@@ -124,9 +124,21 @@ accepts 1–100. The HUD limit shows the current cap.
 
 The controller estimates the share of a frame budget spent outside its own
 wait. This includes driver waits and other delays, so `target_gpu_load` is a
-frame-budget target rather than a hardware utilization reading. Every 300 ms
-it compares the mean with the target. At 85%, it steps down at 90% or above,
-steps up at 75% or below, and holds between those thresholds. Gaps longer than
+frame-budget target rather than a hardware utilization reading. Every 300 ms (at least five samples) it estimates a sustainable cap from
+the 80th percentile of time outside the wait. With an 80% target and a 10 ms
+P80, the estimate is 80 FPS. A single slow frame cannot set the percentile.
+
+Recovery begins after two windows with headroom. To start a climb the first
+estimate needs at least 3 FPS and 5% spare capacity. The controller starts at
+`step_up_fps`, doubles the step after each successful increase, and limits it
+to 8 FPS (or the configured starting step if larger). Each increase is bounded
+by the estimate and `max_fps_limit`. With a starting step of 1 and enough
+headroom, a 40 FPS cap climbs through 41, 43, 47, 55, 63, 71, 79 and 80.
+
+Two consecutive late arrivals during the first window after a rise restore the
+preceding cap. Further rises wait at least 600 ms and restart at the base step.
+Sustained overload reduces the cap towards the new estimate by up to
+`step_down_fps` per window, except when rolling back a failed rise. Gaps longer than
 two seconds start a fresh window at the maximum cap.
 
 ## Optional CPU thread limit

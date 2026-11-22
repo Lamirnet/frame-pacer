@@ -183,8 +183,77 @@ static void dynamic_load_changes(void)
     frame_pacer_clock_destroy(&clock);
 }
 
+static void advance_dynamic(struct frame_pacer_clock *clock,
+                            struct fake_time *time,
+                            const struct frame_pacer_dynamic_config *cfg,
+                            uint64_t work_ns)
+{
+    struct frame_pacer_decision decision;
+
+    time->now_ns += work_ns;
+    frame_pacer_clock_wait_config(clock, cfg->max_fps, cfg, fake_now,
+                                  fake_sleep, time, &decision);
+}
+
+static void accelerated_recovery(void)
+{
+    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1};
+    struct frame_pacer_clock clock;
+    struct fake_time time = {0};
+    const unsigned steps[] = {41, 43, 47, 55, 63, 71, 79, 80};
+    frame_pacer_clock_init(&clock);
+    advance_dynamic(&clock, &time, &cfg, 0);
+    for (unsigned i = 0; i < 160; ++i)
+        advance_dynamic(&clock, &time, &cfg, 30000000);
+    assert(clock.fps == 40);
+
+    uint64_t start = time.now_ns;
+    unsigned step = 0;
+    while (clock.fps < 80 && time.now_ns - start < UINT64_C(3500000000)) {
+        unsigned previous = clock.fps;
+        advance_dynamic(&clock, &time, &cfg, 10000000);
+        if (clock.fps != previous) {
+            assert(step < sizeof(steps) / sizeof(steps[0]));
+            assert(clock.fps == steps[step++]);
+        }
+    }
+    assert(step == sizeof(steps) / sizeof(steps[0]));
+    for (unsigned i = 0; i < 100; ++i)
+        advance_dynamic(&clock, &time, &cfg, 10000000);
+    advance_dynamic(&clock, &time, &cfg, 96000000);
+    for (unsigned i = 0; i < 40; ++i) {
+        advance_dynamic(&clock, &time, &cfg, 10000000);
+        assert(clock.fps == 80);
+    }
+
+    for (unsigned i = 0; i < 160; ++i)
+        advance_dynamic(&clock, &time, &cfg, 30000000);
+    for (unsigned i = 0; i < 200 && clock.fps < 43; ++i)
+        advance_dynamic(&clock, &time, &cfg, 10000000);
+    assert(clock.fps == 43);
+    advance_dynamic(&clock, &time, &cfg, 26000000);
+    assert(clock.fps == 43);
+    advance_dynamic(&clock, &time, &cfg, 26000000);
+    assert(clock.fps == 41);
+    start = time.now_ns;
+    while (time.now_ns - start < UINT64_C(570000000)) {
+        advance_dynamic(&clock, &time, &cfg, 14000000);
+        assert(clock.fps == 41);
+    }
+    for (unsigned i = 0; i < 300; ++i) {
+        unsigned previous = clock.fps;
+        advance_dynamic(&clock, &time, &cfg, 14000000);
+        if (previous == 41 && clock.fps > previous)
+            assert(clock.fps == 42);
+        assert(clock.fps <= 57);
+    }
+    assert(clock.fps == 57);
+    frame_pacer_clock_destroy(&clock);
+}
+
 int main(void)
 {
+    accelerated_recovery();
     dynamic_load_changes();
     sequential_waits();
     deadlines_saturate_at_uint64_max();

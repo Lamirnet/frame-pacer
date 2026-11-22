@@ -1,6 +1,7 @@
 #include "pacer_clock.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint64_t add_intervals(uint64_t value, uint64_t interval, uint64_t count)
@@ -26,6 +27,108 @@ void frame_pacer_clock_destroy(struct frame_pacer_clock *clock)
     (void)pthread_mutex_destroy(&clock->mutex);
 }
 
+#define DYNAMIC_WINDOW_NS UINT64_C(300000000)
+#define DYNAMIC_RETRY_NS UINT64_C(600000000)
+
+static int compare_work(const void *left, const void *right)
+{
+    uint32_t a = *(const uint32_t *)left;
+    uint32_t b = *(const uint32_t *)right;
+    return (a > b) - (a < b);
+}
+
+static void reset_rise(struct frame_pacer_clock *clock)
+{
+    clock->next_rise = clock->dynamic.step_up;
+    clock->headroom_confirmed = false;
+    clock->previous_cap = 0;
+    clock->late_streak = 0;
+}
+
+static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
+                           uint64_t now, uint32_t work)
+{
+    const struct frame_pacer_dynamic_config *cfg = &clock->dynamic;
+    if (clock->previous_cap) {
+        /* Only roll back an unconfirmed rise. One late frame is tolerated. */
+        if ((uint64_t)work * fps > UINT64_C(1000000000))
+            ++clock->late_streak;
+        else
+            clock->late_streak = 0;
+        if (clock->late_streak >= 2) {
+            fps = clock->previous_cap;
+            reset_rise(clock);
+            clock->retry_after_ns = add_intervals(now, DYNAMIC_RETRY_NS, 1);
+            clock->window_start_ns = now;
+            clock->samples = 0;
+            return fps;
+        }
+    }
+
+    clock->work_samples[clock->samples++] = work;
+    if (clock->samples < FRAME_PACER_WINDOW_CAPACITY &&
+        (now - clock->window_start_ns < DYNAMIC_WINDOW_NS ||
+         clock->samples < 5))
+        return fps;
+
+    qsort(clock->work_samples, clock->samples, sizeof(clock->work_samples[0]),
+          compare_work);
+    /* Nearest-rank P80. Five or more samples exclude a single worst frame. */
+    uint64_t p80 = clock->work_samples[clock->samples - clock->samples / 5 - 1];
+    clock->samples = 0;
+    clock->window_start_ns = now;
+    uint64_t capacity =
+        p80 ? cfg->target_load * UINT64_C(10000000) / p80 : UINT64_MAX;
+    uint64_t supported = capacity;
+    if (supported < cfg->min_fps)
+        supported = cfg->min_fps;
+    if (supported > cfg->max_fps)
+        supported = cfg->max_fps;
+
+    unsigned high = cfg->target_load > 95 ? 100 : cfg->target_load + 5;
+    if (supported < fps && p80 * fps >= high * UINT64_C(10000000)) {
+        uint32_t drop = fps - (uint32_t)supported;
+        uint32_t next = fps - (drop < cfg->step_down ? drop : cfg->step_down);
+        if (clock->previous_cap && clock->previous_cap < next)
+            next = clock->previous_cap;
+        if (clock->previous_cap)
+            clock->retry_after_ns = add_intervals(now, DYNAMIC_RETRY_NS, 1);
+        reset_rise(clock);
+        return next;
+    }
+
+    bool climbing = clock->previous_cap != 0;
+    clock->previous_cap = 0;
+    clock->late_streak = 0;
+    /* Allow a running climb to finish its last small step. */
+    bool room = supported > fps &&
+                (climbing ||
+                 (capacity - fps >= 3 &&
+                  p80 * fps * 105 <= cfg->target_load * UINT64_C(1000000000)));
+    if (!room) {
+        reset_rise(clock);
+        return fps;
+    }
+    if (!clock->headroom_confirmed) {
+        clock->headroom_confirmed = true;
+        return fps;
+    }
+
+    if (now < clock->retry_after_ns)
+        return fps;
+
+    uint32_t rise = (uint32_t)supported - fps;
+    if (rise > clock->next_rise)
+        rise = clock->next_rise;
+    clock->previous_cap = fps;
+    /* Preserve an explicitly configured base step above eight. */
+    unsigned maximum_step = cfg->step_up > 8 ? cfg->step_up : 8;
+    clock->next_rise *= 2;
+    if (clock->next_rise > maximum_step)
+        clock->next_rise = maximum_step;
+    return fps + rise;
+}
+
 /* Called under the pacing mutex. Time outside our wait includes any
  * downstream present, driver or compositor blocking. */
 static void dynamic_wait(struct frame_pacer_clock *clock,
@@ -44,29 +147,18 @@ static void dynamic_wait(struct frame_pacer_clock *clock,
         clock->dynamic = *cfg;
         clock->fps = cfg->max_fps;
         clock->window_start_ns = clock->last_release_ns = now;
-        clock->work_ns = clock->samples = 0;
+        clock->samples = 0;
+        clock->retry_after_ns = 0;
+        reset_rise(clock);
         clock->started = true;
         decision->first = true;
         return;
     }
-    clock->work_ns += now - clock->last_release_ns;
-    ++clock->samples;
-    if (now - clock->window_start_ns >= UINT64_C(300000000)) {
-        uint64_t mean = clock->work_ns / clock->samples;
-        uint64_t load = mean * fps * 100 / UINT64_C(1000000000);
-        unsigned high = cfg->target_load > 95 ? 100 : cfg->target_load + 5;
-        unsigned low = cfg->target_load > 10 ? cfg->target_load - 10 : 0;
-
-        if (load >= high)
-            fps -= fps - cfg->min_fps < cfg->step_down ? fps - cfg->min_fps
-                                                       : cfg->step_down;
-        else if (load <= low)
-            fps += cfg->max_fps - fps < cfg->step_up ? cfg->max_fps - fps
-                                                     : cfg->step_up;
-        clock->fps = fps;
-        clock->window_start_ns = now;
-        clock->work_ns = clock->samples = 0;
-    }
+    uint32_t adjusted =
+        adjust_cap(clock, fps, now, (uint32_t)(now - clock->last_release_ns));
+    if (fps != adjusted)
+        clock->fps = adjusted;
+    fps = adjusted;
     decision->deadline_ns =
         add_intervals(clock->last_release_ns, UINT64_C(1000000000) / fps, 1);
     decision->missed = now >= decision->deadline_ns;

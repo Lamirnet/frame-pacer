@@ -10,13 +10,19 @@
 typedef uint64_t (*frame_pacer_now_fn)(void *);
 typedef int (*frame_pacer_sleep_fn)(void *, uint64_t);
 
+/* At 999 FPS a 300 ms window contains at most 301 paced frames. */
+#define FRAME_PACER_WINDOW_CAPACITY 320U
+
 struct frame_pacer_clock {
     pthread_mutex_t mutex;
     bool initialized;
     bool started;
     _Atomic uint32_t fps;
     struct frame_pacer_dynamic_config dynamic;
-    uint64_t last_release_ns, window_start_ns, work_ns, samples;
+    uint64_t last_release_ns, window_start_ns, retry_after_ns;
+    uint32_t work_samples[FRAME_PACER_WINDOW_CAPACITY];
+    unsigned samples, next_rise, previous_cap, late_streak;
+    bool headroom_confirmed;
     uint64_t next_deadline_ns;
 };
 
