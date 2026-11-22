@@ -109,6 +109,8 @@ static int sleep_until(void *unused, uint64_t deadline)
 static void init_pacing_clock(void)
 {
     frame_pacer_clock_init(&pacing_clock);
+    if (frame_pacer_log_enabled())
+        frame_pacer_clock_enable_trace(&pacing_clock);
     frame_pacer_limit_init(&pacing_limit);
     frame_pacer_thread_cpu_quota_init(&thread_cpu_quota);
     frame_pacer_thread_cpu_quota_set_logger(&thread_cpu_quota,
@@ -868,6 +870,7 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *version)
 
 static void __attribute__((destructor)) frame_pacer_shutdown(void)
 {
+    frame_pacer_clock_flush_trace(&pacing_clock, logmsg);
     if (frame_pacer_runtime_log_active(&runtime_log))
         logmsg("frame-pacer: shutdown presents=%" PRIu64 " log_bytes=%" PRIu64
                "\n",

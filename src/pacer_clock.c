@@ -1,6 +1,7 @@
 #include "pacer_clock.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,6 +9,55 @@ static uint64_t add_intervals(uint64_t value, uint64_t interval, uint64_t count)
 {
     return count > (UINT64_MAX - value) / interval ? UINT64_MAX
                                                    : value + count * interval;
+}
+
+#define SPIKE_CAPACITY 1024U
+#define SPIKE_NS UINT64_C(20000000)
+
+struct spike_sample {
+    uint64_t release, total, outside, requested, wait;
+    uint32_t previous_fps, fps;
+};
+
+struct frame_pacer_spike_trace {
+    uint64_t count;
+    struct spike_sample events[SPIKE_CAPACITY];
+};
+
+void frame_pacer_clock_enable_trace(struct frame_pacer_clock *clock)
+{
+    if (clock && clock->initialized && !clock->trace)
+        clock->trace = calloc(1, sizeof(*clock->trace));
+}
+
+void frame_pacer_clock_flush_trace(struct frame_pacer_clock *clock,
+                                   void (*log)(const char *, ...))
+{
+    if (!clock || !clock->initialized)
+        return;
+    (void)pthread_mutex_lock(&clock->mutex);
+    struct frame_pacer_spike_trace *trace = clock->trace;
+    clock->trace = NULL;
+    (void)pthread_mutex_unlock(&clock->mutex);
+    if (!trace)
+        return;
+    if (log) {
+        uint64_t first =
+            trace->count > SPIKE_CAPACITY ? trace->count - SPIKE_CAPACITY : 0;
+        log("frame-pacer: spike-summary count=%" PRIu64 " overwritten=%" PRIu64
+            "\n",
+            trace->count, first);
+        for (uint64_t i = first; i < trace->count; ++i) {
+            const struct spike_sample *e = &trace->events[i % SPIKE_CAPACITY];
+            log("frame-pacer: frame-spike release_ns=%" PRIu64
+                " total_ns=%" PRIu64 " outside_ns=%" PRIu64
+                " requested_ns=%" PRIu64 " wait_ns=%" PRIu64
+                " previous_fps=%u fps=%u\n",
+                e->release, e->total, e->outside, e->requested, e->wait,
+                e->previous_fps, e->fps);
+        }
+    }
+    free(trace);
 }
 
 void frame_pacer_clock_init(struct frame_pacer_clock *clock)
@@ -23,6 +73,8 @@ void frame_pacer_clock_destroy(struct frame_pacer_clock *clock)
 {
     if (!clock || !clock->initialized)
         return;
+    free(clock->trace);
+    clock->trace = NULL;
     clock->initialized = false;
     (void)pthread_mutex_destroy(&clock->mutex);
 }
@@ -49,9 +101,11 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
                            uint64_t now, uint32_t work)
 {
     const struct frame_pacer_dynamic_config *cfg = &clock->dynamic;
+    bool late = (uint64_t)work * fps > UINT64_C(1000000000);
+    clock->recent_late = ((clock->recent_late << 1) | (unsigned)late) & 7U;
     if (clock->previous_cap) {
         /* Only roll back an unconfirmed rise. One late frame is tolerated. */
-        if ((uint64_t)work * fps > UINT64_C(1000000000))
+        if (late)
             ++clock->late_streak;
         else
             clock->late_streak = 0;
@@ -63,6 +117,15 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
             clock->samples = 0;
             return fps;
         }
+    }
+
+    if (!clock->previous_cap && late && clock->recent_late != 1U &&
+        fps > cfg->min_fps && now >= clock->next_drop_ns) {
+        uint32_t room = fps - cfg->min_fps;
+        reset_rise(clock);
+        clock->window_start_ns = now;
+        clock->samples = 0;
+        return fps - (room < cfg->step_down ? room : cfg->step_down);
     }
 
     clock->work_samples[clock->samples++] = work;
@@ -86,7 +149,8 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
         supported = cfg->max_fps;
 
     unsigned high = cfg->target_load > 95 ? 100 : cfg->target_load + 5;
-    if (supported < fps && p80 * fps >= high * UINT64_C(10000000)) {
+    if (now >= clock->next_drop_ns && supported < fps &&
+        p80 * fps >= high * UINT64_C(10000000)) {
         uint32_t drop = fps - (uint32_t)supported;
         uint32_t next = fps - (drop < cfg->step_down ? drop : cfg->step_down);
         if (clock->previous_cap && clock->previous_cap < next)
@@ -149,6 +213,8 @@ static void dynamic_wait(struct frame_pacer_clock *clock,
         clock->window_start_ns = clock->last_release_ns = now;
         clock->samples = 0;
         clock->retry_after_ns = 0;
+        clock->next_drop_ns = 0;
+        clock->recent_late = 0;
         reset_rise(clock);
         clock->started = true;
         decision->first = true;
@@ -156,16 +222,39 @@ static void dynamic_wait(struct frame_pacer_clock *clock,
     }
     uint32_t adjusted =
         adjust_cap(clock, fps, now, (uint32_t)(now - clock->last_release_ns));
-    if (fps != adjusted)
+    if (fps != adjusted) {
+        clock->recent_late = 0;
         clock->fps = adjusted;
-    fps = adjusted;
-    decision->deadline_ns =
-        add_intervals(clock->last_release_ns, UINT64_C(1000000000) / fps, 1);
+        if (adjusted < fps)
+            clock->next_drop_ns = add_intervals(now, DYNAMIC_WINDOW_NS, 1);
+    }
+    decision->deadline_ns = add_intervals(clock->last_release_ns,
+                                          UINT64_C(1000000000) / adjusted, 1);
     decision->missed = now >= decision->deadline_ns;
+    uint64_t wait_begin =
+        clock->trace && !decision->missed ? now_fn(opaque) : now;
     if (!decision->missed)
         while (sleep_fn(opaque, decision->deadline_ns) == EINTR)
             ++decision->interruptions;
-    clock->last_release_ns = now_fn(opaque);
+    uint64_t release = now_fn(opaque);
+    uint64_t last = clock->last_release_ns;
+    if (clock->trace && release >= wait_begin && release >= last &&
+        release - last > SPIKE_NS) {
+        struct frame_pacer_spike_trace *trace = clock->trace;
+        struct spike_sample *e =
+            &trace->events[trace->count++ % SPIKE_CAPACITY];
+        *e = (struct spike_sample){
+            .release = release,
+            .total = release - last,
+            .outside = now - last,
+            .requested = decision->deadline_ns > wait_begin
+                             ? decision->deadline_ns - wait_begin
+                             : 0,
+            .wait = !decision->missed ? release - wait_begin : 0,
+            .previous_fps = fps,
+            .fps = adjusted};
+    }
+    clock->last_release_ns = release;
 }
 
 void frame_pacer_clock_wait_config(struct frame_pacer_clock *clock,

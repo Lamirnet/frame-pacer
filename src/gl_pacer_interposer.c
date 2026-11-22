@@ -144,6 +144,8 @@ static void init(void)
                    "unsupported function pointer representation");
     memcpy(&real_dlsym, &symbol, sizeof(real_dlsym));
     frame_pacer_clock_init(&clock_);
+    if (frame_pacer_log_enabled())
+        frame_pacer_clock_enable_trace(&clock_);
     frame_pacer_limit_init(&limit_);
     frame_pacer_thread_cpu_quota_init(&thread_cpu_quota_);
     frame_pacer_thread_cpu_quota_set_logger(&thread_cpu_quota_,
@@ -501,6 +503,7 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *name)
 
 static void __attribute__((destructor)) done(void)
 {
+    frame_pacer_clock_flush_trace(&clock_, logmsg);
     if (frame_pacer_runtime_log_active(&runtime_log))
         logmsg("frame-pacer: GL shutdown swaps=%" PRIu64 " log_bytes=%" PRIu64
                "\n",

@@ -113,6 +113,23 @@ configuration is not mode `600`, while `config=malformed`,
 `trigger=reload` means a live edit
 changed the effective configuration.
 
+### Dynamic pacing spikes
+
+With `FRAME_PACER_LOG=1`, dynamic mode keeps the last 1024 release-to-release
+intervals over 20 ms in memory. On normal process exit the PID log receives a
+`spike-summary` with the total and overwritten counts, followed by
+`frame-spike` records in chronological order. An abrupt exit loses the buffer.
+Initialization, configuration resets and gaps over two seconds restart sampling.
+
+All times are nanoseconds. `release_ns` is the monotonic timestamp at the end
+of the interval. `total_ns` is its length, `outside_ns` is the elapsed time
+before the pacing decision, and `requested_ns` and `wait_ns` are the intended
+and measured waits. For a skipped sleep both wait values are zero.
+`previous_fps` and `fps` give the cap before and after this decision.
+Controller overhead can account for a small difference between total time
+and the sum of outside time and wait time. At low caps even a normally paced
+frame may exceed 20 ms.
+
 ### Steam shader processing
 
 The Vulkan layer bypasses rendering features when the native executable is

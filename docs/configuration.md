@@ -137,7 +137,10 @@ headroom, a 40 FPS cap climbs through 41, 43, 47, 55, 63, 71, 79 and 80.
 
 Two consecutive late arrivals during the first window after a rise restore the
 preceding cap. Further rises wait at least 600 ms and restart at the base step.
-Sustained overload reduces the cap towards the new estimate by up to
+At a steady cap, two late arrivals in the last three frames lower the cap by
+one `step_down_fps` immediately. A single late arrival does not trigger this
+rule. After a decrease, steady-state reductions wait at least 300 ms. A failed
+rise still uses the preceding-cap rollback. Sustained overload reduces the cap towards the new estimate by up to
 `step_down_fps` per window, except when rolling back a failed rise. Gaps longer than
 two seconds start a fresh window at the maximum cap.
 

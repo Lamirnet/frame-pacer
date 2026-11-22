@@ -23,6 +23,9 @@ struct frame_pacer_clock {
     uint32_t work_samples[FRAME_PACER_WINDOW_CAPACITY];
     unsigned samples, next_rise, previous_cap, late_streak;
     bool headroom_confirmed;
+    unsigned recent_late;
+    uint64_t next_drop_ns;
+    struct frame_pacer_spike_trace *trace;
     uint64_t next_deadline_ns;
 };
 
@@ -35,6 +38,12 @@ struct frame_pacer_decision {
 };
 
 void frame_pacer_clock_init(struct frame_pacer_clock *);
+/* Enable during backend initialization. Drain at normal shutdown. */
+FRAME_PACER_LIMIT_INTERNAL void
+frame_pacer_clock_enable_trace(struct frame_pacer_clock *);
+FRAME_PACER_LIMIT_INTERNAL void
+frame_pacer_clock_flush_trace(struct frame_pacer_clock *,
+                              void (*log)(const char *, ...));
 void frame_pacer_clock_destroy(struct frame_pacer_clock *);
 void frame_pacer_clock_wait(struct frame_pacer_clock *, uint32_t fps,
                             frame_pacer_now_fn, frame_pacer_sleep_fn, void *,

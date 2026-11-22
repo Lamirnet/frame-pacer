@@ -2,6 +2,9 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 #include <pthread.h>
 
 #define TEST_FPS 70U
@@ -251,8 +254,82 @@ static void accelerated_recovery(void)
     frame_pacer_clock_destroy(&clock);
 }
 
+static void steady_overload(void)
+{
+    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1};
+    struct frame_pacer_clock clock;
+    struct fake_time time = {0};
+    frame_pacer_clock_init(&clock);
+    advance_dynamic(&clock, &time, &cfg, 0);
+    advance_dynamic(&clock, &time, &cfg, 20000000);
+    advance_dynamic(&clock, &time, &cfg, 9000000);
+    assert(clock.fps == 80);
+    advance_dynamic(&clock, &time, &cfg, 21000000);
+    assert(clock.fps == 75);
+    for (unsigned i = 0; i < 14; ++i) {
+        advance_dynamic(&clock, &time, &cfg, 20000000);
+        assert(clock.fps == 75);
+    }
+    advance_dynamic(&clock, &time, &cfg, 20000000);
+    assert(clock.fps == 70);
+    frame_pacer_clock_destroy(&clock);
+}
+
+static char trace_line[384];
+static char trace_summary[128];
+static unsigned trace_events;
+
+static void collect_trace(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    if (strstr(format, "frame-spike")) {
+        vsnprintf(trace_line, sizeof(trace_line), format, args);
+        ++trace_events;
+    } else
+        vsnprintf(trace_summary, sizeof(trace_summary), format, args);
+    va_end(args);
+}
+
+static int wake_late(void *opaque, uint64_t deadline)
+{
+    struct fake_time *time = opaque;
+    time->now_ns = deadline + UINT64_C(10000000);
+    return 0;
+}
+
+static void long_frame_trace(void)
+{
+    struct frame_pacer_dynamic_config cfg = {1, 80, 80, 80, 5, 1};
+    struct frame_pacer_clock clock;
+    struct frame_pacer_decision decision;
+    struct fake_time time = {0};
+    frame_pacer_clock_init(&clock);
+    frame_pacer_clock_enable_trace(&clock);
+    advance_dynamic(&clock, &time, &cfg, 0);
+    time.now_ns += 10000000;
+    frame_pacer_clock_wait_config(&clock, 80, &cfg, fake_now, wake_late, &time,
+                                  &decision);
+    frame_pacer_clock_flush_trace(&clock, collect_trace);
+    assert(trace_events == 1);
+    assert(strstr(trace_line, "total_ns=22500000 outside_ns=10000000 "
+                              "requested_ns=2500000 wait_ns=12500000"));
+    frame_pacer_clock_enable_trace(&clock);
+    trace_events = 0;
+    advance_dynamic(&clock, &time, &cfg, 20000000);
+    for (unsigned i = 0; i < 1026; ++i)
+        advance_dynamic(&clock, &time, &cfg, 22000000);
+    frame_pacer_clock_flush_trace(&clock, collect_trace);
+    assert(strstr(trace_summary, "count=1026 overwritten=2"));
+    assert(trace_events == 1024);
+    assert(strstr(trace_line, "outside_ns=22000000 requested_ns=0 wait_ns=0"));
+    frame_pacer_clock_destroy(&clock);
+}
+
 int main(void)
 {
+    long_frame_trace();
+    steady_overload();
     accelerated_recovery();
     dynamic_load_changes();
     sequential_waits();
