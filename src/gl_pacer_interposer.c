@@ -265,7 +265,10 @@ static void pace(enum frame_pacer_report_backend backend)
     if (logging)
         (void)frame_pacer_effective_report_if_due(&effective_reporter, &limit_,
                                                   backend, report_write, 0);
-    frame_pacer_clock_wait(&clock_, fps, now_ns, sleep_until, 0, &decision);
+    struct frame_pacer_dynamic_config dynamic =
+        frame_pacer_limit_dynamic(&limit_);
+    frame_pacer_clock_wait_config(&clock_, fps, &dynamic, now_ns, sleep_until,
+                                  0, &decision);
 }
 
 static void render_hud(EGLDisplay egl_display, EGLSurface egl_surface,
@@ -294,6 +297,8 @@ static void render_hud(EGLDisplay egl_display, EGLSurface egl_surface,
         return;
     (void)pthread_once(&metrics_once, init_metrics);
     limit = frame_pacer_limit_poll(&limit_, now_ns(0));
+    if (atomic_load(&limit_.dynamic_enabled) && atomic_load(&clock_.fps))
+        limit = atomic_load(&clock_.fps);
     thread_cpu_quota = frame_pacer_limit_thread_cpu_quota(
         &limit_, &thread_cpu_quota_configured);
     frame_pacer_thread_cpu_quota_publish(

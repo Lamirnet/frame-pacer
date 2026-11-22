@@ -13,6 +13,8 @@
 #include <unistd.h>
 
 struct parsed_rule {
+    struct frame_pacer_dynamic_config dynamic;
+    unsigned dynamic_seen;
     char section[FRAME_PACER_EXECUTABLE_MAX];
     char executable[FRAME_PACER_EXECUTABLE_MAX];
     size_t header_line;
@@ -28,6 +30,8 @@ struct parsed_rule {
 struct parse_state {
     struct frame_pacer_effective_config result;
     struct parsed_rule rule;
+    struct frame_pacer_dynamic_config global_dynamic, selected_dynamic;
+    unsigned global_dynamic_seen;
     char selected_section[FRAME_PACER_EXECUTABLE_MAX];
     uint32_t selected_fps;
     uint32_t selected_quota;
@@ -336,6 +340,7 @@ void frame_pacer_limit_init(struct frame_pacer_limit *limit)
         return;
     memset(limit, 0, sizeof(*limit));
     atomic_init(&limit->last_check_ns, 0);
+    atomic_init(&limit->dynamic_enabled, false);
     atomic_init(&limit->fps, FRAME_PACER_FPS_LIMIT_OFF);
     atomic_init(&limit->thread_cpu_quota, 0);
     atomic_init(&limit->hud_enabled, true);
@@ -468,7 +473,12 @@ static bool finish_rule(struct parse_state *state,
 
     if (!state->in_rule)
         return true;
-    if (!rule->has_executable || !rule->has_fps) {
+    if (rule->dynamic.min_fps > rule->dynamic.max_fps) {
+        set_failure(&state->result, FRAME_PACER_CONFIG_MALFORMED,
+                    FRAME_PACER_REASON_INVALID_VALUE, rule->header_line);
+        return false;
+    }
+    if (!rule->has_executable || (!rule->has_fps && !rule->dynamic_seen)) {
         set_failure(&state->result, FRAME_PACER_CONFIG_MALFORMED,
                     FRAME_PACER_REASON_INCOMPLETE_RULE, rule->header_line);
         return false;
@@ -485,8 +495,14 @@ static bool finish_rule(struct parse_state *state,
     if (state->selected_priority < 0 ||
         rule->priority < state->selected_priority) {
         state->selected_priority = rule->priority;
-        state->selected_fps = rule->fps;
-        state->selected_fps_off = rule->fps == FRAME_PACER_FPS_LIMIT_OFF;
+        state->selected_dynamic = rule->dynamic;
+        /* Existing fixed/off game overrides take precedence over an inherited
+         * dynamic mode. A game can explicitly opt back in. */
+        if (rule->has_fps && !(rule->dynamic_seen & 1U))
+            state->selected_dynamic.enabled = false;
+        state->selected_fps =
+            rule->has_fps ? rule->fps : state->result.fps_limit;
+        state->selected_fps_off = rule->has_fps && !rule->fps;
         state->selected_quota_enabled = rule->quota_enabled;
         state->selected_quota = rule->quota;
         state->selected_has_quota = rule->has_quota;
@@ -527,6 +543,8 @@ static bool parse_limit(const char *text, size_t length,
     uint32_t global_fps = FRAME_PACER_FPS_LIMIT_OFF;
 
     memset(&state, 0, sizeof(state));
+    state.global_dynamic =
+        (struct frame_pacer_dynamic_config){0, 45, 120, 85, 5, 2};
     state.result = *result;
     state.result.status = FRAME_PACER_CONFIG_VALID;
     state.result.reason = FRAME_PACER_REASON_NONE;
@@ -564,6 +582,9 @@ static bool parse_limit(const char *text, size_t length,
                             FRAME_PACER_REASON_INVALID_SECTION, line_number);
                 goto failure;
             }
+            if (state.global_dynamic.min_fps > state.global_dynamic.max_fps)
+                goto invalid_value;
+            state.rule.dynamic = state.global_dynamic;
             state.rule.header_line = line_number;
             state.rule.priority = -1;
             state.in_rule = true;
@@ -581,6 +602,38 @@ static bool parse_limit(const char *text, size_t length,
 
             trim(&key_begin, &key_end);
             trim(&value_begin, &value_end);
+            struct frame_pacer_dynamic_config *cfg =
+                state.in_rule ? &state.rule.dynamic : &state.global_dynamic;
+            unsigned *seen = state.in_rule ? &state.rule.dynamic_seen
+                                           : &state.global_dynamic_seen;
+            struct {
+                const char *name;
+                uint32_t *field;
+            } options[] = {{"dynamic_fps", &cfg->enabled},
+                           {"min_fps_limit", &cfg->min_fps},
+                           {"max_fps_limit", &cfg->max_fps},
+                           {"target_gpu_load", &cfg->target_load},
+                           {"step_down_fps", &cfg->step_down},
+                           {"step_up_fps", &cfg->step_up}};
+            for (unsigned i = 0; i < sizeof(options) / sizeof(options[0]);
+                 ++i) {
+                if ((size_t)(key_end - key_begin) != strlen(options[i].name) ||
+                    memcmp(key_begin, options[i].name, key_end - key_begin))
+                    continue;
+                if (*seen & (1U << i))
+                    goto duplicate_key;
+                *seen |= 1U << i;
+                if (options[i].field == &cfg->enabled) {
+                    bool enabled;
+                    if (!parse_hud_enabled(value_begin, value_end, &enabled))
+                        goto invalid_value;
+                    cfg->enabled = enabled;
+                } else if (!parse_fps(value_begin, value_end,
+                                      options[i].field) ||
+                           cfg->target_load > 100)
+                    goto invalid_value;
+                goto next;
+            }
             if (!state.in_rule &&
                 (size_t)(key_end - key_begin) == strlen("global_fps_limit") &&
                 !memcmp(key_begin, "global_fps_limit",
@@ -592,6 +645,7 @@ static bool parse_limit(const char *text, size_t length,
                 if (!parse_fps_limit(value_begin, value_end, &global_fps,
                                      &explicit_off))
                     goto invalid_value;
+                state.result.fps_limit = global_fps;
                 state.global_present = true;
                 state.global_off = explicit_off;
             } else if (!state.in_rule &&
@@ -711,6 +765,20 @@ static bool parse_limit(const char *text, size_t length,
             state.result.reason = FRAME_PACER_REASON_NO_EXECUTABLE_MATCH;
         else
             state.result.reason = FRAME_PACER_REASON_NO_PER_GAME_RULES;
+    }
+    if (state.global_dynamic.min_fps > state.global_dynamic.max_fps) {
+        set_failure(&state.result, FRAME_PACER_CONFIG_MALFORMED,
+                    FRAME_PACER_REASON_INVALID_VALUE, line_number);
+        goto failure;
+    }
+    state.result.dynamic = state.selected_priority >= 0 ? state.selected_dynamic
+                                                        : state.global_dynamic;
+    if (state.result.dynamic.enabled) {
+        state.result.fps_limit = state.result.dynamic.max_fps;
+        state.result.reason = FRAME_PACER_REASON_NONE;
+        state.result.fps_source = state.selected_priority >= 0
+                                      ? FRAME_PACER_SOURCE_PER_GAME
+                                      : FRAME_PACER_SOURCE_GLOBAL;
     }
     *result = state.result;
     return true;
@@ -946,6 +1014,7 @@ static bool same_effective(const struct frame_pacer_effective_config *left,
 {
     return left->status == right->status && left->reason == right->reason &&
            left->error_line == right->error_line &&
+           !memcmp(&left->dynamic, &right->dynamic, sizeof(left->dynamic)) &&
            left->fps_limit == right->fps_limit &&
            left->fps_source == right->fps_source &&
            left->hud_enabled == right->hud_enabled &&
@@ -961,7 +1030,8 @@ static bool same_effective(const struct frame_pacer_effective_config *left,
 #if defined(__GNUC__)
 __attribute__((noinline))
 #endif
-static uint32_t refresh_limit(struct frame_pacer_limit *limit, uint64_t now_ns)
+static uint32_t
+refresh_limit(struct frame_pacer_limit *limit, uint64_t now_ns)
 {
     struct frame_pacer_effective_config next;
     uint64_t last_check_ns, revision;
@@ -983,8 +1053,10 @@ static uint32_t refresh_limit(struct frame_pacer_limit *limit, uint64_t now_ns)
         if (!revision || !same_effective(&limit->effective, &next))
             ++revision;
         next.revision = revision;
-        limit->effective = next;
     }
+    limit->effective = next;
+    atomic_store_explicit(&limit->dynamic_enabled, next.dynamic.enabled,
+                          memory_order_release);
     atomic_store_explicit(&limit->fps, next.fps_limit, memory_order_relaxed);
     atomic_store_explicit(&limit->thread_cpu_quota,
                           next.thread_cpu_enabled ? next.thread_cpu_percent : 0,
@@ -1083,3 +1155,17 @@ void frame_pacer_limit_test_fail_at(struct frame_pacer_limit *limit,
     (void)pthread_mutex_unlock(&limit->mutex);
 }
 #endif
+
+struct frame_pacer_dynamic_config
+frame_pacer_limit_dynamic(struct frame_pacer_limit *limit)
+{
+    struct frame_pacer_dynamic_config config = {0};
+
+    if (limit &&
+        atomic_load_explicit(&limit->dynamic_enabled, memory_order_acquire)) {
+        (void)pthread_mutex_lock(&limit->mutex);
+        config = limit->effective.dynamic;
+        (void)pthread_mutex_unlock(&limit->mutex);
+    }
+    return config;
+}

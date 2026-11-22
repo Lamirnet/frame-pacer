@@ -141,8 +141,51 @@ static void concurrent_waits_are_serialized(void)
     frame_pacer_clock_destroy(&clock);
 }
 
+static void dynamic_load_changes(void)
+{
+    struct frame_pacer_clock clock;
+    struct frame_pacer_decision decision;
+    struct fake_time time = {0};
+    struct frame_pacer_dynamic_config cfg = {1, 90, 100, 85, 7, 3};
+
+    frame_pacer_clock_init(&clock);
+    frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
+                                  &time, &decision);
+    assert(decision.first && clock.fps == 100);
+    for (unsigned i = 0; i < 30; ++i) {
+        time.now_ns += 10000000;
+        frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
+                                      &time, &decision);
+        assert(clock.fps == (i < 29 ? 100U : 93U));
+    }
+    for (unsigned i = 0; i < 50; ++i) {
+        time.now_ns += 12000000;
+        frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
+                                      &time, &decision);
+    }
+    assert(clock.fps == 90);
+    for (unsigned i = 0; i < 60; ++i) {
+        time.now_ns += 9000000;
+        frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
+                                      &time, &decision);
+        assert(clock.fps == 90);
+    }
+    for (unsigned i = 0; i < 200; ++i) {
+        time.now_ns += 1000000;
+        frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
+                                      &time, &decision);
+    }
+    assert(clock.fps == 100);
+    time.now_ns += UINT64_C(3000000000);
+    frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
+                                  &time, &decision);
+    assert(decision.first && !clock.samples);
+    frame_pacer_clock_destroy(&clock);
+}
+
 int main(void)
 {
+    dynamic_load_changes();
     sequential_waits();
     deadlines_saturate_at_uint64_max();
     concurrent_waits_are_serialized();

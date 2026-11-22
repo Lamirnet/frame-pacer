@@ -66,7 +66,12 @@ enum frame_pacer_value_source {
     FRAME_PACER_SOURCE_PER_GAME
 };
 
+struct frame_pacer_dynamic_config {
+    uint32_t enabled, min_fps, max_fps, target_load, step_down, step_up;
+};
+
 struct frame_pacer_effective_config {
+    struct frame_pacer_dynamic_config dynamic;
     uint64_t revision;
     enum frame_pacer_config_status status;
     enum frame_pacer_config_reason reason;
@@ -103,6 +108,7 @@ struct frame_pacer_limit {
     char path[1200];
     _Atomic uint64_t last_check_ns;
     _Atomic uint32_t fps;
+    _Atomic bool dynamic_enabled;
     _Atomic uint32_t thread_cpu_quota;
     _Atomic bool hud_enabled;
     _Atomic uint64_t revision;
@@ -123,6 +129,8 @@ struct frame_pacer_limit {
 void frame_pacer_limit_init(struct frame_pacer_limit *);
 void frame_pacer_limit_destroy(struct frame_pacer_limit *);
 uint32_t frame_pacer_limit_poll(struct frame_pacer_limit *, uint64_t now_ns);
+FRAME_PACER_LIMIT_INTERNAL struct frame_pacer_dynamic_config
+frame_pacer_limit_dynamic(struct frame_pacer_limit *);
 FRAME_PACER_LIMIT_INTERNAL uint64_t
 frame_pacer_limit_revision(const struct frame_pacer_limit *);
 FRAME_PACER_LIMIT_INTERNAL bool

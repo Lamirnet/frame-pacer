@@ -54,6 +54,8 @@ Then protect the file:
 chmod 600 ~/.config/frame-pacer/frame-pacer.conf
 ```
 
+For an adaptive cap, set `dynamic_fps = on`. See [dynamic FPS settings](docs/configuration.md#dynamic-fps-limit) for bounds, steps and game overrides.
+
 Both settings are optional. Use `global_fps_limit = off` for no default limit
 and `hud = off` to hide the HUD.
 

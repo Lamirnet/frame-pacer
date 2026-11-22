@@ -36,13 +36,11 @@ uncapped.
 | `global_fps_limit` | Before any game section | `1`–`999`, or `off` | No global FPS limit |
 | `hud` | Before any game section | `on` or `off` | HUD on |
 | `executable` | Inside a game section | Quoted executable filename, 1–511 bytes | Required |
-| `fps_limit` | Inside a game section | `1`–`999`, or `off` | Required |
+| `fps_limit` | Inside a game section | `1`–`999`, or `off` | Optional in a section with dynamic settings |
 | `thread_cpu_limit` | Inside a game section | `1%`–`100%`, or `off` | Off |
 
 Use lowercase `on` and `off`. An `executable` must be a filename such as
-`"Game.exe"`, not a path. It cannot contain `/`, `\`, or another quote. If a
-game section is missing either `executable` or `fps_limit`, the whole
-configuration is invalid.
+`"Game.exe"`, not a path. It cannot contain `/`, `\`, or another quote. Each game section requires an executable and at least one fixed or dynamic FPS setting.
 
 ## Basic configuration
 
@@ -85,7 +83,7 @@ executable = "uncapped-game"
 fps_limit = off
 ```
 
-Each section needs an `executable` and an `fps_limit`:
+For fixed limits, use the following rules:
 
 - The section name, such as `[Tactical game]`, is only a label.
 - `executable` is the filename of the process that renders the game, without
@@ -103,6 +101,33 @@ even when Wine clears or retains a launcher's command line. If a launcher hands
 off to a different game executable, a rule for that selected game takes
 priority. A launcher rule can still act as a collection-wide fallback through
 the same-user parent process chain.
+
+## Dynamic FPS limit
+
+Enable globally before the first section or add these keys to a game section
+with an `executable`. Game sections inherit individual dynamic settings.
+A per-game `fps_limit` selects fixed/off mode unless that same section sets
+`dynamic_fps = on`. With dynamic mode on, `max_fps_limit` is the starting cap.
+
+```ini
+dynamic_fps = on
+min_fps_limit = 45
+max_fps_limit = 120
+target_gpu_load = 85
+step_down_fps = 5
+step_up_fps = 2
+```
+
+The numbers above are the defaults. Dynamic pacing is off by default. Limits
+and steps accept 1–999, minimum must not exceed maximum, and the target
+accepts 1–100. The HUD limit shows the current cap.
+
+The controller estimates the share of a frame budget spent outside its own
+wait. This includes driver waits and other delays, so `target_gpu_load` is a
+frame-budget target rather than a hardware utilization reading. Every 300 ms
+it compares the mean with the target. At 85%, it steps down at 90% or above,
+steps up at 75% or below, and holds between those thresholds. Gaps longer than
+two seconds start a fresh window at the maximum cap.
 
 ## Optional CPU thread limit
 

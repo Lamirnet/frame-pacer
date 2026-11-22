@@ -14,7 +14,9 @@ struct frame_pacer_clock {
     pthread_mutex_t mutex;
     bool initialized;
     bool started;
-    uint32_t fps;
+    _Atomic uint32_t fps;
+    struct frame_pacer_dynamic_config dynamic;
+    uint64_t last_release_ns, window_start_ns, work_ns, samples;
     uint64_t next_deadline_ns;
 };
 
@@ -31,5 +33,10 @@ void frame_pacer_clock_destroy(struct frame_pacer_clock *);
 void frame_pacer_clock_wait(struct frame_pacer_clock *, uint32_t fps,
                             frame_pacer_now_fn, frame_pacer_sleep_fn, void *,
                             struct frame_pacer_decision *);
+FRAME_PACER_LIMIT_INTERNAL void
+frame_pacer_clock_wait_config(struct frame_pacer_clock *, uint32_t fps,
+                              const struct frame_pacer_dynamic_config *,
+                              frame_pacer_now_fn, frame_pacer_sleep_fn, void *,
+                              struct frame_pacer_decision *);
 
 #endif

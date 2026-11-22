@@ -508,8 +508,43 @@ static void test_concurrent_snapshots(void)
     fixture_destroy(&fixture);
 }
 
+static void test_dynamic_config(void)
+{
+    struct fixture f;
+    struct frame_pacer_effective_config cfg;
+    char text[1024];
+
+    fixture_init(&f);
+    snprintf(text, sizeof(text),
+             "dynamic_fps = on\nmin_fps_limit = 55\n"
+             "[game]\nexecutable = \"%s\"\nmax_fps_limit = 95\n",
+             f.limit.executable_candidates[0]);
+    write_text(f.path, text);
+    cfg = poll_snapshot(&f);
+    assert(cfg.dynamic.enabled && cfg.fps_limit == 95 &&
+           cfg.dynamic.min_fps == 55);
+    assert(cfg.dynamic.step_down == 5 && cfg.dynamic.step_up == 2 &&
+           cfg.dynamic.target_load == 85);
+    strcat(text, "fps_limit = off\n");
+    write_text(f.path, text);
+    cfg = poll_snapshot(&f);
+    assert(!cfg.dynamic.enabled && !cfg.fps_limit);
+    expect_failure(&f, "step_up_fps = 1\nstep_up_fps = 2\n",
+                   FRAME_PACER_REASON_DUPLICATE_KEY, 2);
+    expect_failure(&f, "target_gpu_load = 101\n",
+                   FRAME_PACER_REASON_INVALID_VALUE, 1);
+    expect_failure(&f, "min_fps_limit = 121", FRAME_PACER_REASON_INVALID_VALUE,
+                   1);
+    frame_pacer_limit_set_reporting_enabled(&f.limit, false);
+    write_text(f.path, "dynamic_fps = on\n");
+    assert(frame_pacer_limit_poll(&f.limit, f.now) == 120);
+    assert(frame_pacer_limit_dynamic(&f.limit).enabled);
+    fixture_destroy(&f);
+}
+
 int main(void)
 {
+    test_dynamic_config();
     test_selection_and_revisions();
     test_wine_launcher_handoff();
     test_parser_taxonomy();

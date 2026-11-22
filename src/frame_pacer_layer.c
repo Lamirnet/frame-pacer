@@ -137,8 +137,10 @@ static void pace(void)
         frame_pacer_thread_cpu_quota_publish(&thread_cpu_quota, enabled,
                                              percent);
     }
-    frame_pacer_clock_wait(&pacing_clock, fps, monotonic, sleep_until, 0,
-                           &decision);
+    struct frame_pacer_dynamic_config dynamic =
+        frame_pacer_limit_dynamic(&pacing_limit);
+    frame_pacer_clock_wait_config(&pacing_clock, fps, &dynamic, monotonic,
+                                  sleep_until, 0, &decision);
 }
 
 static bool should_log_present_failure(VkResult result)
@@ -188,6 +190,9 @@ static void format_hud_text(void *context,
     frame_pacer_hud_vulkan_device_metrics_snapshot(&device->hud, now, &metrics);
     fps_valid = frame_pacer_fps_snapshot(fps_tracker, &fps);
     limit = current_limit(now);
+    if (atomic_load(&pacing_limit.dynamic_enabled) &&
+        atomic_load(&pacing_clock.fps))
+        limit = atomic_load(&pacing_clock.fps);
     thread_cpu_quota_percent = frame_pacer_limit_thread_cpu_quota(
         &pacing_limit, &thread_cpu_quota_configured);
     frame_pacer_hud_text_format(
