@@ -1,39 +1,41 @@
-# frame-pacer
+# frame-pacer · Dynamic FPS
 
-A lightweight FPS limiter and performance HUD for Steam games on Linux.
-Works with Vulkan, Proton, GLX, and EGL games.
+An adaptive FPS limiter and performance HUD for Steam games on Linux. This
+fork of [endjynn/frame-pacer](https://github.com/endjynn/frame-pacer) adds
+dynamic frame pacing for Vulkan, Proton, GLX and EGL games.
 
-[![CI](https://github.com/endjynn/frame-pacer/actions/workflows/ci.yml/badge.svg)](https://github.com/endjynn/frame-pacer/actions/workflows/ci.yml)
+Set a minimum and maximum FPS for a game. The limiter lowers the cap when
+frames repeatedly arrive late and raises it in small, then progressively
+larger steps when frame times stabilize. The HUD shows the current cap.
 
-> **AI-assisted development:** Frame-pacer is created and maintained by a
-> professional software developer who uses AI tools throughout development.
-> The maintainer reviews the work and remains responsible for every technical
-> decision and release.
-
-![frame-pacer HUD](docs/images/frame-pacer-hud.png)
+<img width="2172" height="724" alt="Адаптивный лимит FPS_ нагрузка и восстановление" src="https://github.com/user-attachments/assets/38d8983f-54d1-4aab-96bf-50d5e5a3c6d3" />
 
 ## Install
 
-Frame-pacer supports the standard, non-Flatpak Steam client on x86_64,
-systemd-based Linux systems. Installation is per-user and needs no `sudo`.
+Use the standard (non-Flatpak) Steam client on an x86_64 Linux system with
+systemd. Install the [source-build requirements](docs/reference/environment.md),
+including the 32-bit dependencies. Fully exit Steam and all games, then build
+the fork:
 
-1. Download the `.tar.xz` archive and matching `.sha256` file from
-   [GitHub Releases](https://github.com/endjynn/frame-pacer/releases).
-2. Open a terminal in the download directory and run:
+```sh
+git clone --branch dynamic-fps https://github.com/Lamirnet/frame-pacer.git
+cd frame-pacer
+make -j4 install PREFIX="$HOME/.local"
+```
 
-   ```sh
-   sha256sum -c frame-pacer-*.tar.xz.sha256
-   tar -xf frame-pacer-*.tar.xz
-   cd frame-pacer-*-linux-x86_64-multilib
-   ./install.sh
-   ```
+`make install` runs the project's installer and installs the 64-bit and 32-bit
+libraries under `~/.local`. No `sudo` is needed for this step.
 
-See [Installation and updates](https://github.com/endjynn/frame-pacer/blob/main/docs/installation.md)
-for source builds, custom locations, updates, and removal.
+To update an existing checkout of this fork:
 
-## Configure
+```sh
+cd ~/frame-pacer
+git switch dynamic-fps && git pull --ff-only && make -j4 install PREFIX="$HOME/.local"
+```
 
-Create `~/.config/frame-pacer/frame-pacer.conf`:
+## Quick start · Deadlock at 40–80 FPS
+
+Create the configuration directory and open the configuration file:
 
 ```sh
 mkdir -p ~/.config/frame-pacer
@@ -41,67 +43,67 @@ chmod 700 ~/.config/frame-pacer
 nano ~/.config/frame-pacer/frame-pacer.conf
 ```
 
-Add any settings you want:
+Put global settings before the first game section. This example enables the
+HUD globally and the adaptive limiter specifically for Deadlock:
 
 ```ini
-global_fps_limit = 60
 hud = on
+
+[Deadlock]
+executable = "deadlock.exe"
+dynamic_fps = on
+min_fps_limit = 40
+max_fps_limit = 80
+target_gpu_load = 85
+step_down_fps = 5
+step_up_fps = 1
 ```
 
-Then protect the file:
+Save the file, fully exit Steam, then run:
 
 ```sh
 chmod 600 ~/.config/frame-pacer/frame-pacer.conf
-```
-
-For an adaptive cap, set `dynamic_fps = on`. See [dynamic FPS settings](docs/configuration.md#dynamic-fps-limit) for bounds, steps and game overrides.
-
-Both settings are optional. Use `global_fps_limit = off` for no default limit
-and `hud = off` to hide the HUD.
-
-## Start Steam
-
-Fully close Steam, then run:
-
-```sh
 ENABLE_FRAME_PACER=1 steam
 ```
 
-Start a game. The HUD should appear in the top-left corner. See
-[Steam integration](https://github.com/endjynn/frame-pacer/blob/main/docs/steam-integration.md)
-to make this permanent.
+Launch Deadlock. With this profile, the cap starts at **80 FPS**. Watch the
+limit shown in the HUD to see when the controller adjusts it. Actual FPS can
+fall below 40 if the game takes longer than 25 ms to produce a frame.
 
-## Per-game limits
+## How the limiter reacts
 
-Add a section to the configuration:
+| Situation | Behavior with the example profile |
+| --- | --- |
+| Sustained load | About every 300 ms, once at least five samples are available, the controller estimates a sustainable cap using the 80th percentile of time spent outside the limiter's own wait. |
+| Repeated late frames | At a steady cap, two late arrivals in the last three frames can trigger an immediate 5 FPS reduction. One isolated late frame does not trigger this rule. |
+| Stable recovery | After two measurement windows with headroom, the cap can climb from 40 through **41, 43, 47, 55, 63, 71, 79 and 80 FPS**. Each increase stays within the estimated sustainable rate. |
+| Failed increase | Two consecutive late arrivals during the first window after an increase restore the preceding cap. The controller waits at least 600 ms before trying to climb again, starting with a 1 FPS step. |
 
-```ini
-[Example game]
-executable = "ExampleGame.exe"
-fps_limit = 45
-```
+Despite its name, `target_gpu_load` is a **frame-time budget target**. A value
+of `85` tells the controller to aim for 85% of the frame interval spent
+outside its own wait. That time can include CPU work and driver waits.
+Hardware GPU utilization is a separate measurement.
 
-`fps_limit` accepts `1` through `999`, or `off`. A matching game setting always
-overrides `global_fps_limit`. Changes apply while the game is running. See
-[Configuration](https://github.com/endjynn/frame-pacer/blob/main/docs/configuration.md)
-for all options.
+For a global adaptive cap, move the dynamic settings above the first game
+section. For a fixed cap in one game, set `fps_limit = 60` in its section
+and omit `dynamic_fps = on` from that section.
 
 ## Native OpenGL games
 
-Add this only to the game's Steam **Launch Options**:
+For a native GLX or EGL game, add this to that game's Steam **Launch Options**:
 
 ```text
 LD_PRELOAD="$HOME/.local/lib/frame-pacer/\${LIB}/libframe_pacer_gl_shim.so" %command%
 ```
 
-Never add this option globally to Steam. Vulkan and Proton games do not need
-it.
+Apply this option only to the individual OpenGL game. Vulkan and Proton games
+use the Vulkan layer when frame-pacer is enabled.
 
-## Help and development
+## Documentation
 
-- [Installation and updates](https://github.com/endjynn/frame-pacer/blob/main/docs/installation.md)
-- [Steam integration](https://github.com/endjynn/frame-pacer/blob/main/docs/steam-integration.md)
-- [Configuration](https://github.com/endjynn/frame-pacer/blob/main/docs/configuration.md)
-- [Troubleshooting](https://github.com/endjynn/frame-pacer/blob/main/docs/troubleshooting.md)
-- [Technical details](https://github.com/endjynn/frame-pacer/blob/main/docs/technical-details.md)
-- [Contributing](https://github.com/endjynn/frame-pacer/blob/main/CONTRIBUTING.md)
+- [Dynamic FPS settings and defaults](docs/configuration.md#dynamic-fps-limit)
+- [Steam integration](docs/steam-integration.md)
+- [Frame-spike diagnostics and troubleshooting](docs/troubleshooting.md)
+- [Installation paths and removal](docs/installation.md)
+- [Technical details](docs/technical-details.md)
+- [Contributing](CONTRIBUTING.md)
