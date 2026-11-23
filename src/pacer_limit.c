@@ -636,8 +636,11 @@ static bool parse_limit(const char *text, size_t length,
                         goto invalid_value;
                     cfg->enabled = enabled;
                 } else if (options[i].field == &cfg->window_ms) {
-                    if (!parse_positive(value_begin, value_end, UINT32_MAX,
-                                        &cfg->window_ms))
+                    if (value_end - value_begin == 4 &&
+                        !memcmp(value_begin, "auto", 4))
+                        cfg->window_ms = 0;
+                    else if (!parse_positive(value_begin, value_end, UINT32_MAX,
+                                             &cfg->window_ms))
                         goto invalid_value;
                 } else if (!parse_fps(value_begin, value_end,
                                       options[i].field) ||

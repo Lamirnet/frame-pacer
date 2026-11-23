@@ -24,7 +24,7 @@ struct frame_pacer_clock {
     uint64_t samples;
     unsigned next_rise, previous_cap, late_streak;
     bool headroom_confirmed;
-    unsigned recent_late;
+    unsigned recent_late, fast_windows;
     uint64_t next_drop_ns;
     struct frame_pacer_spike_trace *trace;
     uint64_t next_deadline_ns;

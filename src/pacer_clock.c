@@ -79,9 +79,16 @@ void frame_pacer_clock_destroy(struct frame_pacer_clock *clock)
     (void)pthread_mutex_destroy(&clock->mutex);
 }
 
-static uint64_t window_ns(const struct frame_pacer_dynamic_config *cfg)
+static uint64_t window_ns(const struct frame_pacer_clock *clock, uint32_t fps)
 {
-    return (uint64_t)cfg->window_ms * UINT64_C(1000000);
+    if (clock->dynamic.window_ms)
+        return (uint64_t)clock->dynamic.window_ms * UINT64_C(1000000);
+    if (!clock->fast_windows)
+        return UINT64_C(300000000);
+    uint64_t duration = UINT64_C(8000000000) / fps;
+    if (duration < UINT64_C(125000000))
+        return UINT64_C(125000000);
+    return duration > UINT64_C(300000000) ? UINT64_C(300000000) : duration;
 }
 #define DYNAMIC_RETRY_NS UINT64_C(600000000)
 
@@ -125,6 +132,8 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
     if (!clock->previous_cap && late && clock->recent_late != 1U &&
         fps > cfg->min_fps && now >= clock->next_drop_ns) {
         uint32_t room = fps - cfg->min_fps;
+        if (!cfg->window_ms)
+            clock->fast_windows = 2;
         reset_rise(clock);
         clock->window_start_ns = now;
         clock->samples = 0;
@@ -143,7 +152,7 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
     }
     if (slot < FRAME_PACER_WINDOW_CAPACITY)
         clock->work_samples[slot] = work;
-    if (now - clock->window_start_ns < window_ns(cfg) || count < 5)
+    if (now - clock->window_start_ns < window_ns(clock, fps) || count < 5)
         return fps;
 
     size_t used = count < FRAME_PACER_WINDOW_CAPACITY ? (size_t)count
@@ -161,6 +170,10 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
     if (supported > cfg->max_fps)
         supported = cfg->max_fps;
 
+    bool fast_window = clock->fast_windows != 0;
+    if (fast_window)
+        --clock->fast_windows;
+
     unsigned high = cfg->target_load > 95 ? 100 : cfg->target_load + 5;
     if (now >= clock->next_drop_ns && supported < fps &&
         p80 * fps >= high * UINT64_C(10000000)) {
@@ -173,6 +186,10 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
         reset_rise(clock);
         return next;
     }
+
+    /* Short overload windows never count towards a recovery probe. */
+    if (fast_window)
+        return fps;
 
     bool climbing = clock->previous_cap != 0;
     clock->previous_cap = 0;
@@ -227,6 +244,7 @@ static void dynamic_wait(struct frame_pacer_clock *clock,
         clock->samples = 0;
         clock->retry_after_ns = 0;
         clock->next_drop_ns = 0;
+        clock->fast_windows = 0;
         clock->recent_late = 0;
         reset_rise(clock);
         clock->started = true;
@@ -239,7 +257,7 @@ static void dynamic_wait(struct frame_pacer_clock *clock,
         clock->recent_late = 0;
         clock->fps = adjusted;
         if (adjusted < fps)
-            clock->next_drop_ns = add_intervals(now, window_ns(cfg), 1);
+            clock->next_drop_ns = add_intervals(now, window_ns(clock, adjusted), 1);
     }
     decision->deadline_ns = add_intervals(clock->last_release_ns,
                                           UINT64_C(1000000000) / adjusted, 1);

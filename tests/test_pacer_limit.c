@@ -539,6 +539,9 @@ static void test_dynamic_config(void)
     strcat(text, "dynamic_window_ms = 125\n");
     write_text(f.path, text);
     assert(poll_snapshot(&f).dynamic.window_ms == 125);
+    write_text(f.path, "dynamic_fps = on\ndynamic_window_ms = auto\n");
+    cfg = poll_snapshot(&f);
+    assert(cfg.dynamic.enabled && cfg.dynamic.window_ms == 0);
     expect_failure(&f, "dynamic_window_ms = 0\n",
                    FRAME_PACER_REASON_INVALID_VALUE, 1);
     expect_failure(&f, "dynamic_window_ms = 4294967296\n",

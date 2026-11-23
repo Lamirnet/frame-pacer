@@ -198,6 +198,34 @@ static void advance_dynamic(struct frame_pacer_clock *clock,
                                   fake_sleep, time, &decision);
 }
 
+static void automatic_window(void)
+{
+    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1, 0};
+    struct frame_pacer_clock clock;
+    struct fake_time time = {0};
+    frame_pacer_clock_init(&clock);
+    advance_dynamic(&clock, &time, &cfg, 0);
+    advance_dynamic(&clock, &time, &cfg, 20000000);
+    assert(clock.fps == 80 && !clock.fast_windows);
+    advance_dynamic(&clock, &time, &cfg, 20000000);
+    assert(clock.fps == 75 && clock.fast_windows == 2);
+    uint64_t drop = time.now_ns;
+    assert(clock.next_drop_ns == drop + UINT64_C(125000000));
+    for (unsigned i = 0; i < 6; ++i)
+        advance_dynamic(&clock, &time, &cfg, 20000000);
+    assert(clock.fps == 75);
+    advance_dynamic(&clock, &time, &cfg, 20000000);
+    assert(clock.fps == 70 && clock.fast_windows == 2);
+    for (unsigned i = 0; i < 24 && clock.fast_windows; ++i)
+        advance_dynamic(&clock, &time, &cfg, 5000000);
+    assert(!clock.fast_windows && !clock.headroom_confirmed && clock.fps == 70);
+    uint64_t recovery = clock.window_start_ns;
+    for (unsigned i = 0; i < 50 && clock.fps == 70; ++i)
+        advance_dynamic(&clock, &time, &cfg, 5000000);
+    assert(clock.fps == 71 && clock.window_start_ns - recovery >= UINT64_C(600000000));
+    frame_pacer_clock_destroy(&clock);
+}
+
 static void configured_windows(void)
 {
     const unsigned windows[] = {1, 125, 150, 300, 5000};
@@ -354,6 +382,7 @@ int main(void)
 {
     long_frame_trace();
     steady_overload();
+    automatic_window();
     configured_windows();
     accelerated_recovery();
     dynamic_load_changes();

@@ -57,7 +57,7 @@ max_fps_limit = 80
 target_gpu_load = 85
 step_down_fps = 5
 step_up_fps = 1
-dynamic_window_ms = 300
+dynamic_window_ms = auto
 ```
 
 Save the file, fully exit Steam, then run:
@@ -75,7 +75,7 @@ fall below 40 if the game takes longer than 25 ms to produce a frame.
 
 | Situation | Behavior with the example profile |
 | --- | --- |
-| Sustained load | Once per configured window (300 ms by default), once at least five samples are available, the controller estimates a sustainable cap using the 80th percentile of time spent outside the limiter's own wait. |
+| Sustained load | Once per measurement window (normally 300 ms in auto mode), once at least five samples are available, the controller estimates a sustainable cap using the 80th percentile of time spent outside the limiter's own wait. |
 | Repeated late frames | At a steady cap, two late arrivals in the last three frames can trigger an immediate 5 FPS reduction. One isolated late frame does not trigger this rule. |
 | Stable recovery | After two measurement windows with headroom, the cap can climb from 40 through **41, 43, 47, 55, 63, 71, 79 and 80 FPS**. Each increase stays within the estimated sustainable rate. |
 | Failed increase | Two consecutive late arrivals during the first window after an increase restore the preceding cap. The controller waits at least 600 ms before trying to climb again, starting with a 1 FPS step. |
@@ -88,6 +88,10 @@ Hardware GPU utilization is a separate measurement.
 For a global adaptive cap, move the dynamic settings above the first game
 section. For a fixed cap in one game, set `fps_limit = 60` in its section
 and omit `dynamic_fps = on` from that section.
+
+Use `dynamic_window_ms = auto` for shorter overload checks after repeated
+late frames, or set an integer such as `150` for a fixed window in milliseconds.
+Omitting the setting uses a fixed 300 ms window.
 
 ## Native OpenGL games
 

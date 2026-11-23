@@ -134,6 +134,14 @@ Set `dynamic_window_ms` to any whole number of milliseconds from 1 to
 faster updates. Windows containing more than 320 frames use a bounded sample
 from the whole window to estimate P80. Short windows still require five frames.
 
+Alternatively, set `dynamic_window_ms = auto`. Normal measurement windows are
+300 ms. A steady-state reduction triggered by two late frames out of three
+starts two overload-only windows. Each lasts eight frame intervals at the
+current cap, clamped to 125–300 ms. The next reduction can occur after that
+shorter interval. Another late-frame reduction restarts the two windows.
+Recovery requires two full normal windows with headroom after this phase.
+The 600 ms retry delay after a failed rise still applies.
+
 Recovery begins after two windows with headroom. To start a climb the first
 estimate needs at least 3 FPS and 5% spare capacity. The controller starts at
 `step_up_fps`, doubles the step after each successful increase, and limits it
