@@ -524,13 +524,25 @@ static void test_dynamic_config(void)
     assert(cfg.dynamic.enabled && cfg.fps_limit == 95 &&
            cfg.dynamic.min_fps == 55);
     assert(cfg.dynamic.step_down == 5 && cfg.dynamic.step_up == 2 &&
-           cfg.dynamic.target_load == 85);
+           cfg.dynamic.target_load == 85 && cfg.dynamic.window_ms == 300);
     strcat(text, "fps_limit = off\n");
     write_text(f.path, text);
     cfg = poll_snapshot(&f);
     assert(!cfg.dynamic.enabled && !cfg.fps_limit);
     expect_failure(&f, "step_up_fps = 1\nstep_up_fps = 2\n",
                    FRAME_PACER_REASON_DUPLICATE_KEY, 2);
+    snprintf(text, sizeof(text),
+             "dynamic_window_ms = 4294967295\n[game]\nexecutable = \"%s\"\ndynamic_fps = on\n",
+             f.limit.executable_candidates[0]);
+    write_text(f.path, text);
+    assert(poll_snapshot(&f).dynamic.window_ms == UINT32_MAX);
+    strcat(text, "dynamic_window_ms = 125\n");
+    write_text(f.path, text);
+    assert(poll_snapshot(&f).dynamic.window_ms == 125);
+    expect_failure(&f, "dynamic_window_ms = 0\n",
+                   FRAME_PACER_REASON_INVALID_VALUE, 1);
+    expect_failure(&f, "dynamic_window_ms = 4294967296\n",
+                   FRAME_PACER_REASON_INVALID_VALUE, 1);
     expect_failure(&f, "target_gpu_load = 101\n",
                    FRAME_PACER_REASON_INVALID_VALUE, 1);
     expect_failure(&f, "min_fps_limit = 121", FRAME_PACER_REASON_INVALID_VALUE,

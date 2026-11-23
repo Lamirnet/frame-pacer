@@ -149,7 +149,7 @@ static void dynamic_load_changes(void)
     struct frame_pacer_clock clock;
     struct frame_pacer_decision decision;
     struct fake_time time = {0};
-    struct frame_pacer_dynamic_config cfg = {1, 90, 100, 85, 7, 3};
+    struct frame_pacer_dynamic_config cfg = {1, 90, 100, 85, 7, 3, 300};
 
     frame_pacer_clock_init(&clock);
     frame_pacer_clock_wait_config(&clock, 100, &cfg, fake_now, fake_sleep,
@@ -198,9 +198,33 @@ static void advance_dynamic(struct frame_pacer_clock *clock,
                                   fake_sleep, time, &decision);
 }
 
+static void configured_windows(void)
+{
+    const unsigned windows[] = {1, 125, 150, 300, 5000};
+    for (unsigned i = 0; i < sizeof(windows) / sizeof(windows[0]); ++i) {
+        struct frame_pacer_dynamic_config cfg = {1, 40, 100, 80, 5, 1, windows[i]};
+        struct frame_pacer_clock clock;
+        struct fake_time time = {0};
+        frame_pacer_clock_init(&clock);
+        advance_dynamic(&clock, &time, &cfg, 0);
+        /* 9.5 ms work at 100 FPS triggers only the percentile path. */
+        for (unsigned n = 1; n < 510; ++n) {
+            advance_dynamic(&clock, &time, &cfg, 9500000);
+            if (n >= 5 && (uint64_t)n * 10000000U - UINT64_C(500000) >=
+                              (uint64_t)windows[i] * 1000000U) {
+                assert(clock.fps == 95);
+                break;
+            }
+            assert(clock.fps == 100);
+        }
+        assert(clock.fps == 95);
+        frame_pacer_clock_destroy(&clock);
+    }
+}
+
 static void accelerated_recovery(void)
 {
-    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1};
+    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1, 300};
     struct frame_pacer_clock clock;
     struct fake_time time = {0};
     const unsigned steps[] = {41, 43, 47, 55, 63, 71, 79, 80};
@@ -256,7 +280,7 @@ static void accelerated_recovery(void)
 
 static void steady_overload(void)
 {
-    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1};
+    struct frame_pacer_dynamic_config cfg = {1, 40, 80, 80, 5, 1, 300};
     struct frame_pacer_clock clock;
     struct fake_time time = {0};
     frame_pacer_clock_init(&clock);
@@ -300,7 +324,7 @@ static int wake_late(void *opaque, uint64_t deadline)
 
 static void long_frame_trace(void)
 {
-    struct frame_pacer_dynamic_config cfg = {1, 80, 80, 80, 5, 1};
+    struct frame_pacer_dynamic_config cfg = {1, 80, 80, 80, 5, 1, 300};
     struct frame_pacer_clock clock;
     struct frame_pacer_decision decision;
     struct fake_time time = {0};
@@ -330,6 +354,7 @@ int main(void)
 {
     long_frame_trace();
     steady_overload();
+    configured_windows();
     accelerated_recovery();
     dynamic_load_changes();
     sequential_waits();

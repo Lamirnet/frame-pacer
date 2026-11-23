@@ -67,7 +67,7 @@ enum frame_pacer_value_source {
 };
 
 struct frame_pacer_dynamic_config {
-    uint32_t enabled, min_fps, max_fps, target_load, step_down, step_up;
+    uint32_t enabled, min_fps, max_fps, target_load, step_down, step_up, window_ms;
 };
 
 struct frame_pacer_effective_config {

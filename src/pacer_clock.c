@@ -79,7 +79,10 @@ void frame_pacer_clock_destroy(struct frame_pacer_clock *clock)
     (void)pthread_mutex_destroy(&clock->mutex);
 }
 
-#define DYNAMIC_WINDOW_NS UINT64_C(300000000)
+static uint64_t window_ns(const struct frame_pacer_dynamic_config *cfg)
+{
+    return (uint64_t)cfg->window_ms * UINT64_C(1000000);
+}
 #define DYNAMIC_RETRY_NS UINT64_C(600000000)
 
 static int compare_work(const void *left, const void *right)
@@ -128,16 +131,26 @@ static uint32_t adjust_cap(struct frame_pacer_clock *clock, uint32_t fps,
         return fps - (room < cfg->step_down ? room : cfg->step_down);
     }
 
-    clock->work_samples[clock->samples++] = work;
-    if (clock->samples < FRAME_PACER_WINDOW_CAPACITY &&
-        (now - clock->window_start_ns < DYNAMIC_WINDOW_NS ||
-         clock->samples < 5))
+    /* Reservoir sampling keeps long windows bounded without ending them early.
+     * Hash the sample number with SplitMix64 for a reproducible slot choice. */
+    uint64_t count = ++clock->samples;
+    uint64_t slot = count - 1;
+    if (count > FRAME_PACER_WINDOW_CAPACITY) {
+        uint64_t hash = count * UINT64_C(0x9e3779b97f4a7c15);
+        hash = (hash ^ (hash >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+        hash = (hash ^ (hash >> 27)) * UINT64_C(0x94d049bb133111eb);
+        slot = (hash ^ (hash >> 31)) % count;
+    }
+    if (slot < FRAME_PACER_WINDOW_CAPACITY)
+        clock->work_samples[slot] = work;
+    if (now - clock->window_start_ns < window_ns(cfg) || count < 5)
         return fps;
 
-    qsort(clock->work_samples, clock->samples, sizeof(clock->work_samples[0]),
+    size_t used = count < FRAME_PACER_WINDOW_CAPACITY ? (size_t)count
+                                                      : FRAME_PACER_WINDOW_CAPACITY;
+    qsort(clock->work_samples, used, sizeof(clock->work_samples[0]),
           compare_work);
-    /* Nearest-rank P80. Five or more samples exclude a single worst frame. */
-    uint64_t p80 = clock->work_samples[clock->samples - clock->samples / 5 - 1];
+    uint64_t p80 = clock->work_samples[used - used / 5 - 1];
     clock->samples = 0;
     clock->window_start_ns = now;
     uint64_t capacity =
@@ -226,7 +239,7 @@ static void dynamic_wait(struct frame_pacer_clock *clock,
         clock->recent_late = 0;
         clock->fps = adjusted;
         if (adjusted < fps)
-            clock->next_drop_ns = add_intervals(now, DYNAMIC_WINDOW_NS, 1);
+            clock->next_drop_ns = add_intervals(now, window_ns(cfg), 1);
     }
     decision->deadline_ns = add_intervals(clock->last_release_ns,
                                           UINT64_C(1000000000) / adjusted, 1);

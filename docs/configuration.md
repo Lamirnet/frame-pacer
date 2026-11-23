@@ -116,6 +116,7 @@ max_fps_limit = 120
 target_gpu_load = 85
 step_down_fps = 5
 step_up_fps = 2
+dynamic_window_ms = 300
 ```
 
 The numbers above are the defaults. Dynamic pacing is off by default. Limits
@@ -124,9 +125,14 @@ accepts 1–100. The HUD limit shows the current cap.
 
 The controller estimates the share of a frame budget spent outside its own
 wait. This includes driver waits and other delays, so `target_gpu_load` is a
-frame-budget target rather than a hardware utilization reading. Every 300 ms (at least five samples) it estimates a sustainable cap from
+frame-budget target rather than a hardware utilization reading. Once per configured window (at least five samples) it estimates a sustainable cap from
 the 80th percentile of time outside the wait. With an 80% target and a 10 ms
 P80, the estimate is 80 FPS. A single slow frame cannot set the percentile.
+
+Set `dynamic_window_ms` to any whole number of milliseconds from 1 to
+4294967295, globally or in a game section. For example, use 125 or 150 for
+faster updates. Windows containing more than 320 frames use a bounded sample
+from the whole window to estimate P80. Short windows still require five frames.
 
 Recovery begins after two windows with headroom. To start a climb the first
 estimate needs at least 3 FPS and 5% spare capacity. The controller starts at
@@ -139,7 +145,7 @@ Two consecutive late arrivals during the first window after a rise restore the
 preceding cap. Further rises wait at least 600 ms and restart at the base step.
 At a steady cap, two late arrivals in the last three frames lower the cap by
 one `step_down_fps` immediately. A single late arrival does not trigger this
-rule. After a decrease, steady-state reductions wait at least 300 ms. A failed
+rule. After a decrease, steady-state reductions wait at least one configured window. A failed
 rise still uses the preceding-cap rollback. Sustained overload reduces the cap towards the new estimate by up to
 `step_down_fps` per window, except when rolling back a failed rise. Gaps longer than
 two seconds start a fresh window at the maximum cap.

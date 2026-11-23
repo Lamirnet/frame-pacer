@@ -377,7 +377,8 @@ static void trim(const char **begin, const char **end)
         --*end;
 }
 
-static bool parse_fps(const char *begin, const char *end, uint32_t *fps)
+static bool parse_positive(const char *begin, const char *end, uint32_t maximum,
+                           uint32_t *out)
 {
     uint64_t value = 0;
 
@@ -385,13 +386,18 @@ static bool parse_fps(const char *begin, const char *end, uint32_t *fps)
         return false;
     while (begin < end && isdigit((unsigned char)*begin)) {
         value = value * 10 + (unsigned)(*begin++ - '0');
-        if (value > FRAME_PACER_MAX_FPS)
+        if (value > maximum)
             return false;
     }
-    if (begin != end || value < FRAME_PACER_MIN_FPS)
+    if (begin != end || !value)
         return false;
-    *fps = (uint32_t)value;
+    *out = (uint32_t)value;
     return true;
+}
+
+static bool parse_fps(const char *begin, const char *end, uint32_t *fps)
+{
+    return parse_positive(begin, end, FRAME_PACER_MAX_FPS, fps);
 }
 
 static bool parse_fps_limit(const char *begin, const char *end, uint32_t *fps,
@@ -544,7 +550,7 @@ static bool parse_limit(const char *text, size_t length,
 
     memset(&state, 0, sizeof(state));
     state.global_dynamic =
-        (struct frame_pacer_dynamic_config){0, 45, 120, 85, 5, 2};
+        (struct frame_pacer_dynamic_config){0, 45, 120, 85, 5, 2, 300};
     state.result = *result;
     state.result.status = FRAME_PACER_CONFIG_VALID;
     state.result.reason = FRAME_PACER_REASON_NONE;
@@ -614,7 +620,8 @@ static bool parse_limit(const char *text, size_t length,
                            {"max_fps_limit", &cfg->max_fps},
                            {"target_gpu_load", &cfg->target_load},
                            {"step_down_fps", &cfg->step_down},
-                           {"step_up_fps", &cfg->step_up}};
+                           {"step_up_fps", &cfg->step_up},
+                           {"dynamic_window_ms", &cfg->window_ms}};
             for (unsigned i = 0; i < sizeof(options) / sizeof(options[0]);
                  ++i) {
                 if ((size_t)(key_end - key_begin) != strlen(options[i].name) ||
@@ -628,6 +635,10 @@ static bool parse_limit(const char *text, size_t length,
                     if (!parse_hud_enabled(value_begin, value_end, &enabled))
                         goto invalid_value;
                     cfg->enabled = enabled;
+                } else if (options[i].field == &cfg->window_ms) {
+                    if (!parse_positive(value_begin, value_end, UINT32_MAX,
+                                        &cfg->window_ms))
+                        goto invalid_value;
                 } else if (!parse_fps(value_begin, value_end,
                                       options[i].field) ||
                            cfg->target_load > 100)
